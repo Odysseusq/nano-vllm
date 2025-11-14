@@ -7,6 +7,7 @@ from nanovllm.sampling_params import SamplingParams
 
 class SequenceStatus(Enum):
     WAITING = auto()
+    PREFILLING = auto()
     RUNNING = auto()
     FINISHED = auto()
 
@@ -15,15 +16,18 @@ class Sequence:
     block_size = 256
     counter = count()
 
-    def __init__(self, token_ids: list[int], sampling_params = SamplingParams()):
+    def __init__(self, token_ids: list[int], sampling_params = SamplingParams(), num_mask_tokens: int = 0):
         self.seq_id = next(Sequence.counter)
         self.status = SequenceStatus.WAITING
         self.token_ids = copy(token_ids)
+        self.num_mask_tokens = num_mask_tokens
+        self.is_first_decode = True
         self.last_token = token_ids[-1]
         self.num_tokens = len(self.token_ids)
         self.num_prompt_tokens = len(token_ids)
         self.num_cached_tokens = 0
         self.block_table = []
+        self.mask_token_id = sampling_params.mask_token_id
         self.temperature = sampling_params.temperature
         self.max_tokens = sampling_params.max_tokens
         self.ignore_eos = sampling_params.ignore_eos
@@ -66,10 +70,12 @@ class Sequence:
         assert 0 <= i < self.num_blocks
         return self.token_ids[i*self.block_size: (i+1)*self.block_size]
 
-    def append_token(self, token_id: int):
-        self.token_ids.append(token_id)
-        self.last_token = token_id
-        self.num_tokens += 1
+    def append_token(self, token_ids: list[int]):
+        if len(token_ids) > 1:
+            token_ids = token_ids[-(self.num_mask_tokens+1):]
+        self.token_ids.extend(token_ids)
+        self.last_token = token_ids[-1]
+        self.num_tokens += len(token_ids)
 
     def __getstate__(self):
         return (self.num_tokens, self.num_prompt_tokens, self.num_cached_tokens, self.block_table,

@@ -167,11 +167,30 @@ class ModelRunner:
         positions = []
         slot_mapping = []
         context_lens = []
+        tokens_per_seq = []
         for seq in seqs:
-            input_ids.append(seq.last_token)
-            positions.append(len(seq) - 1)
-            context_lens.append(len(seq))
-            slot_mapping.append(seq.block_table[-1] * self.block_size + seq.last_block_num_tokens  - 1)
+            num_mask = seq.num_mask_tokens
+            prefix_len = 1 if seq.is_first_decode else num_mask + 1
+            seq_len = len(seq)
+            seq_input_ids = seq[-prefix_len:] + [seq.mask_token_id] * num_mask
+            seq_positions = list(range(seq_len - prefix_len, seq_len + num_mask))
+            assert len(seq_input_ids) == len(seq_positions)
+            seq.is_first_decode = False
+            input_ids.extend(seq_input_ids)
+            positions.extend(seq_positions)
+            total_tokens = len(seq_input_ids)
+            tokens_per_seq.append(total_tokens)
+            context_len = seq_len + num_mask
+            context_lens.append(context_len)
+            seq_slot_mapping = []
+            for pos in seq_positions:
+                block_idx = pos // self.block_size
+                assert block_idx < len(seq.block_table) and seq.block_table[block_idx] >= 0
+                block_id = seq.block_table[block_idx]
+                offset = pos % self.block_size
+                seq_slot_mapping.append(block_id * self.block_size + offset)
+            slot_mapping.extend(seq_slot_mapping)
+        assert len(input_ids) == len(positions) == len(slot_mapping)
         input_ids = torch.tensor(input_ids, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         positions = torch.tensor(positions, dtype=torch.int64, pin_memory=True).cuda(non_blocking=True)
         slot_mapping = torch.tensor(slot_mapping, dtype=torch.int32, pin_memory=True).cuda(non_blocking=True)
