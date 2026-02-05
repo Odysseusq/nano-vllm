@@ -3,6 +3,8 @@ from torch import nn
 import torch.nn.functional as F
 import torch.distributed as dist
 
+from nanovllm.layers.dist_primitives import differentiable_all_reduce_sum, differentiable_identity
+
 
 def divide(numerator, denominator):
     assert numerator % denominator == 0
@@ -70,6 +72,8 @@ class ColumnParallelLinear(LinearBase):
         param_data.copy_(loaded_weight)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.tp_size > 1:
+            x = differentiable_identity(x)
         return F.linear(x, self.weight, self.bias)
 
 
@@ -149,5 +153,5 @@ class RowParallelLinear(LinearBase):
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         y = F.linear(x, self.weight, self.bias if self.tp_rank == 0 else None)
         if self.tp_size > 1:
-            dist.all_reduce(y)
+            y = differentiable_all_reduce_sum(y)
         return y

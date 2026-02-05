@@ -4,6 +4,7 @@ import torch.nn.functional as F
 import torch.distributed as dist
 
 from nanovllm.utils.context import get_context
+from nanovllm.layers.dist_primitives import differentiable_all_reduce_sum, differentiable_identity
 
 
 class VocabParallelEmbedding(nn.Module):
@@ -38,7 +39,7 @@ class VocabParallelEmbedding(nn.Module):
         y = F.embedding(x, self.weight)
         if self.tp_size > 1:
             y = mask.unsqueeze(1) * y
-            dist.all_reduce(y)
+            y = differentiable_all_reduce_sum(y)
         return y
 
 
@@ -58,6 +59,7 @@ class ParallelLMHead(VocabParallelEmbedding):
         if context.is_prefill:
             last_indices = context.cu_seqlens_q[1:] - 1
             x = x[last_indices].contiguous()
+        x = differentiable_identity(x)
         logits = F.linear(x, self.weight)
         if self.tp_size > 1:
             all_logits = [torch.empty_like(logits) for _ in range(self.tp_size)] if self.tp_rank == 0 else None
