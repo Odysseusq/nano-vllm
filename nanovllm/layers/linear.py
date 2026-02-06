@@ -24,6 +24,7 @@ class LinearBase(nn.Module):
         self.tp_dim = tp_dim
         self.tp_rank = dist.get_rank()
         self.tp_size = dist.get_world_size()
+        self.tp_sub_sizes = None
         self.weight = nn.Parameter(torch.empty(output_size, input_size))
         self.weight.weight_loader = self.weight_loader
         if bias:
@@ -34,6 +35,22 @@ class LinearBase(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         raise NotImplementedError
+
+    def gather_for_save(self, tensor):
+        if self.tp_dim is None or self.tp_size == 1:
+            return tensor.cpu()
+        parts = [tensor] if self.tp_sub_sizes is None else tensor.split(self.tp_sub_sizes, dim=self.tp_dim)
+        cpu_parts = []
+        for part in parts:
+            if self.tp_rank == 0:
+                shards = [torch.empty_like(part) for _ in range(self.tp_size)]
+            else:
+                shards = None
+            dist.gather(part.contiguous(), shards, dst=0)
+            if self.tp_rank == 0:
+                cpu_parts.append(torch.cat([s.cpu() for s in shards], dim=self.tp_dim))
+                del shards
+        return torch.cat(cpu_parts, dim=self.tp_dim) if self.tp_rank == 0 else None
 
 
 class ReplicatedLinear(LinearBase):
@@ -87,6 +104,7 @@ class MergedColumnParallelLinear(ColumnParallelLinear):
     ):
         self.output_sizes = output_sizes
         super().__init__(input_size, sum(output_sizes), bias)
+        self.tp_sub_sizes = [s // self.tp_size for s in self.output_sizes]
 
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor, loaded_shard_id: int):
         param_data = param.data
@@ -114,6 +132,7 @@ class QKVParallelLinear(ColumnParallelLinear):
         self.num_kv_heads = divide(total_num_kv_heads, tp_size)
         output_size = (total_num_heads + 2 * total_num_kv_heads) * self.head_size
         super().__init__(hidden_size, output_size, bias)
+        self.tp_sub_sizes = [self.num_heads * self.head_size, self.num_kv_heads * self.head_size, self.num_kv_heads * self.head_size]
 
     def weight_loader(self, param: nn.Parameter, loaded_weight: torch.Tensor, loaded_shard_id: str):
         param_data = param.data

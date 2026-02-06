@@ -42,6 +42,20 @@ class VocabParallelEmbedding(nn.Module):
             y = differentiable_all_reduce_sum(y)
         return y
 
+    def gather_for_save(self, tensor):
+        if self.tp_size == 1:
+            return tensor.cpu()
+        if self.tp_rank == 0:
+            shards = [torch.empty_like(tensor) for _ in range(self.tp_size)]
+        else:
+            shards = None
+        dist.gather(tensor.contiguous(), shards, dst=0)
+        if self.tp_rank == 0:
+            cpu_shards = [s.cpu() for s in shards]
+            del shards
+            return torch.cat(cpu_shards, dim=0)
+        return None
+
 
 class ParallelLMHead(VocabParallelEmbedding):
 

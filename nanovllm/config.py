@@ -1,26 +1,77 @@
-import os
-from dataclasses import dataclass
-from transformers import AutoConfig
+from dataclasses import dataclass, fields
+import yaml
+
+
+def from_dict(cls, data):
+    kwargs = {}
+    for f in fields(cls):
+        if f.name not in data:
+            continue
+        v = data[f.name]
+        if hasattr(f.type, '__dataclass_fields__') if isinstance(f.type, type) else False:
+            v = from_dict(f.type, v)
+        kwargs[f.name] = v
+    return cls(**kwargs)
+
+
+@dataclass
+class ModelConfig:
+    path: str
+    dtype: str = "bfloat16"
+
+
+@dataclass
+class DataConfig:
+    path: str
+    micro_batch_size: int = 4
+    seq_len: int = 2048
+    gradient_accumulation_steps: int = 1
+
+
+@dataclass
+class OptimizerConfig:
+    lr: float = 3e-4
+    min_lr: float = 1e-5
+    weight_decay: float = 0.01
+    adam_beta1: float = 0.9
+    adam_beta2: float = 0.95
+    adam_eps: float = 1e-8
+    clip_grad: float = 1.0
+    warmup_steps: int = 100
+    total_steps: int = 2000
+
+
+@dataclass
+class ParallelismConfig:
+    tp: int = 1
+    port: int = 2333
+
+
+@dataclass
+class CheckpointConfig:
+    save_dir: str = "checkpoints"
+    save_every: int = 500
+    resume_from: str = None
 
 
 @dataclass
 class Config:
-    model: str
-    max_num_batched_tokens: int = 16384
-    max_num_seqs: int = 512
-    max_model_len: int = 4096
-    gpu_memory_utilization: float = 0.9
-    tensor_parallel_size: int = 1
-    enforce_eager: bool = False
-    hf_config: AutoConfig | None = None
-    eos: int = -1
-    kvcache_block_size: int = 256
-    num_kvcache_blocks: int = -1
+    model: ModelConfig
+    data: DataConfig
+    optimizer: OptimizerConfig = None
+    parallelism: ParallelismConfig = None
+    checkpoint: CheckpointConfig = None
 
     def __post_init__(self):
-        assert os.path.isdir(self.model)
-        assert self.kvcache_block_size % 256 == 0
-        assert 1 <= self.tensor_parallel_size <= 8
-        self.hf_config = AutoConfig.from_pretrained(self.model)
-        self.max_model_len = min(self.max_model_len, self.hf_config.max_position_embeddings)
-        assert self.max_num_batched_tokens >= self.max_model_len
+        if self.optimizer is None:
+            self.optimizer = OptimizerConfig()
+        if self.parallelism is None:
+            self.parallelism = ParallelismConfig()
+        if self.checkpoint is None:
+            self.checkpoint = CheckpointConfig()
+
+    @classmethod
+    def from_yaml(cls, path):
+        with open(path) as f:
+            d = yaml.safe_load(f)
+        return from_dict(cls, d)
